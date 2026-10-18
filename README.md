@@ -51,4 +51,4 @@ This downloads Zig 0.13.0 (sha256-verified) into `./tools`. It cross-compiles a 
 - The native hashes were cross-checked against [Zolika1351/iv-sdk](https://github.com/Zolika1351/iv-sdk).
 
 ## License
-MIT
+GPL-3.0 (derived from FusionFix, which is GPL-3.0).
