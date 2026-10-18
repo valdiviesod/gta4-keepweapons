@@ -1,0 +1,5 @@
+tools/
+downloads/
+*.asi
+*.log
+tests/test_patscan
