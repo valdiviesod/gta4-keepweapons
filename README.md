@@ -2,7 +2,7 @@
 
 An ASI plugin for **GTA IV: The Complete Edition (1.2.0.59)** that keeps your weapons and ammo when you are **Wasted**, and optionally when you are **Busted**. It works in IV, TLAD and TBoGT.
 
-> ⚠️ **Status: experimental, not yet tested in-game.** It builds cleanly and the pattern scanner has unit tests, but nobody has run it in a game session yet. Please open an issue with your `KeepWeapons.log` if you try it.
+> ✅ **Status: tested in-game.** It works on GTA IV CE 1.2.0.59 with FusionFix under Proton (Linux): weapons and ammo are restored after Wasted.
 
 ## Requirements
 - GTA IV Complete Edition **1.2.0.59** (Steam)
