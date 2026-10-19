@@ -127,7 +127,7 @@ typedef struct {
 } Snapshot;
 
 enum { ST_ALIVE = 0, ST_DOWN = 1 };
-enum { CAUSE_NONE = 0, CAUSE_WASTED = 1, CAUSE_BUSTED = 2 };
+enum { CAUSE_NONE = 0, CAUSE_WASTED = 1, CAUSE_BUSTED = 2, CAUSE_STRIP = 3 };
 
 #define RESPAWN_SETTLE_MS  1500u    /* wait this long after alive+controllable */
 #define FADE_FALLBACK_MS   20000u   /* restore anyway if screen never reports faded-in */
@@ -140,6 +140,13 @@ static char g_iniPath[MAX_PATH + 32];
 static int g_cfgKeepOnDeath = 1;
 static int g_cfgKeepOnArrest = 1;
 static int g_cfgKeepEmpty = 1;
+static int g_cfgRestoreOnStrip = 1;
+/* Strip restores are rate limited so a mission that insists on an unarmed
+ * player is not fought forever. */
+#define KW_STRIP_MAX 2
+#define KW_STRIP_WINDOW_MS 60000
+static int g_stripCount;
+static DWORD g_stripTick;
 
 static uintptr_t g_base;        /* GetModuleHandle(NULL) */
 static uintptr_t g_scanEnd;     /* end of the last executable section */
@@ -230,6 +237,7 @@ static void LoadConfig(void)
     g_cfgKeepOnDeath = GetPrivateProfileIntA("MAIN", "KeepOnDeath", 1, g_iniPath) != 0;
     g_cfgKeepOnArrest = GetPrivateProfileIntA("MAIN", "KeepOnArrest", 1, g_iniPath) != 0;
     g_cfgKeepEmpty = GetPrivateProfileIntA("MAIN", "KeepEmptyWeapons", 1, g_iniPath) != 0;
+    g_cfgRestoreOnStrip = GetPrivateProfileIntA("MAIN", "RestoreOnStrip", 1, g_iniPath) != 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -607,7 +615,7 @@ static void KeepEmptyWeapons(uint32_t ped, const Snapshot* prev, Snapshot* cur, 
 
 static const char* CauseName(int c)
 {
-    return c == CAUSE_WASTED ? "WASTED" : (c == CAUSE_BUSTED ? "BUSTED" : "NONE");
+    return c == CAUSE_WASTED ? "WASTED" : c == CAUSE_BUSTED ? "BUSTED" : c == CAUSE_STRIP ? "STRIPPED" : "NONE";
 }
 
 static void OnFrame(void)
@@ -667,6 +675,28 @@ static void OnFrame(void)
             return;
         }
         TakeSnapshot(ped, &g_snap);
+        /* Every weapon gone at once while alive: mission death/fail cleanup
+         * (which can run before the game flags the player as dead), a mission
+         * retry, or a script strip. Freeze the last good loadout and restore
+         * it through the same settle/fade-in path as a death. */
+        if (g_cfgRestoreOnStrip && g_prev.valid && g_snap.count == 0 &&
+            (g_prev.count > 1 || (g_prev.count == 1 && g_prev.w[0].ammo > KW_EMPTY_LAST_AMMO))) {
+            if (now - g_stripTick > KW_STRIP_WINDOW_MS) g_stripCount = 0;
+            if (g_stripCount < KW_STRIP_MAX) {
+                g_stripCount++;
+                g_stripTick = now;
+                g_snap = g_prev;
+                g_state = ST_DOWN;
+                g_cause = CAUSE_STRIP;
+                g_downTick = now;
+                g_aliveTick = 0;
+                g_prev.valid = 0;
+                Logf("down: cause=STRIPPED weapons=%d current=%u, last loadout frozen (strip %d/%d)",
+                     g_snap.count, (unsigned)g_snap.current, g_stripCount, KW_STRIP_MAX);
+                return;
+            }
+            Logf("strip: limit reached, leaving the player unarmed");
+        }
         if (g_cfgKeepEmpty) KeepEmptyWeapons(ped, &g_prev, &g_snap, now);
         g_prev = g_snap;
         return;
@@ -792,7 +822,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
         DisableThreadLibraryCalls(hinst);
         SetupPaths(hinst);
         LoadConfig();
-        Logf("KeepWeapons loaded. KeepOnDeath=%d KeepOnArrest=%d KeepEmptyWeapons=%d", g_cfgKeepOnDeath, g_cfgKeepOnArrest, g_cfgKeepEmpty);
+        Logf("KeepWeapons loaded. KeepOnDeath=%d KeepOnArrest=%d KeepEmptyWeapons=%d RestoreOnStrip=%d", g_cfgKeepOnDeath, g_cfgKeepOnArrest, g_cfgKeepEmpty, g_cfgRestoreOnStrip);
         if (TryInit() == 0) {
             th = CreateThread(NULL, 0, PollThread, NULL, 0, NULL);
             if (th) CloseHandle(th);
