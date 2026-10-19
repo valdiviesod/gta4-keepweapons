@@ -19,6 +19,7 @@ An ASI plugin for **GTA IV: The Complete Edition (1.2.0.59)** that keeps your we
 [MAIN]
 KeepOnDeath=1   ; restore weapons after Wasted
 KeepOnArrest=1  ; restore weapons after Busted
+KeepEmptyWeapons=1  ; keep a weapon in the inventory with 0 ammo instead of losing it
 ```
 
 ## How it works
@@ -26,6 +27,7 @@ KeepOnArrest=1  ; restore weapons after Busted
 - It reads natives from the game's own native table by hash, the same way FusionFix does. It does **not** use hard-coded addresses.
 - While the player is alive, it records a snapshot of weapon slots 1–11 (weapon ID and ammo) and the current weapon.
 - When the player dies or is arrested, that snapshot is kept. After the player respawns and the screen fades in, plus about 1.5 s, the plugin restores the weapons: `REMOVE_ALL_CHAR_WEAPONS`, then `GIVE_WEAPON_TO_CHAR` and `SET_CHAR_AMMO` for each weapon, then `SET_CURRENT_CHAR_WEAPON`. Removing everything first prevents duplicated ammo.
+- **Keep empty weapons (v0.2.0):** GTA IV removes a weapon when its ammo reaches 0. Each frame the plugin compares the loadout with the previous frame. If a weapon disappeared after having 60 or fewer rounds left, the plugin adds it back with 0 ammo, so it stays in your inventory and you can refill it at Ammu-Nation. If every weapon disappears at once, the plugin treats it as a mission script taking them away and does nothing. If the game drops the same weapon again more than 3 times in 5 seconds, the plugin stops re-adding it. Empty weapons are also kept through death and arrest.
 - **Fail-safe:** every pattern must match exactly once, and every native must resolve. If anything fails, the plugin patches nothing and stays inert.
 
 ## Logging
@@ -34,6 +36,7 @@ The plugin writes `KeepWeapons.log` next to the `.asi`:
 - `init: OK` or `init FAILED: ...`
 - `natives: all resolved`
 - `down: cause=...` and `restore: ... weapons=N`
+- `empty: weapon N ran dry ..., kept with 0 ammo`
 
 ## Build (Linux, no root)
 ```bash

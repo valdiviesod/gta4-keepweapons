@@ -139,6 +139,7 @@ static char g_iniPath[MAX_PATH + 32];
 
 static int g_cfgKeepOnDeath = 1;
 static int g_cfgKeepOnArrest = 1;
+static int g_cfgKeepEmpty = 1;
 
 static uintptr_t g_base;        /* GetModuleHandle(NULL) */
 static uintptr_t g_scanEnd;     /* end of the last executable section */
@@ -165,6 +166,16 @@ static int g_cause = CAUSE_NONE;
 static DWORD g_downTick;
 static DWORD g_aliveTick;
 static Snapshot g_snap;
+
+/* Keep-empty-weapons state: the previous frame's loadout and, per weapon id,
+ * how many times we re-added it after the game dropped it at 0 ammo. */
+#define KW_EMPTY_LAST_AMMO 60   /* weapon must have been nearly empty to count as "ran dry" */
+#define KW_EMPTY_MAX_READD 3    /* stop fighting the game after this many quick re-drops */
+#define KW_EMPTY_WINDOW_MS 5000
+#define KW_WEAPON_IDS 64
+static Snapshot g_prev;
+static uint8_t g_readdCount[KW_WEAPON_IDS];
+static DWORD g_readdTick[KW_WEAPON_IDS];
 
 /* ------------------------------------------------------------------------- */
 /* Logging (kernel32/user32 only, no CRT dependency)                          */
@@ -218,6 +229,7 @@ static void LoadConfig(void)
     /* Missing file or key -> defaults (both 1, per the task). */
     g_cfgKeepOnDeath = GetPrivateProfileIntA("MAIN", "KeepOnDeath", 1, g_iniPath) != 0;
     g_cfgKeepOnArrest = GetPrivateProfileIntA("MAIN", "KeepOnArrest", 1, g_iniPath) != 0;
+    g_cfgKeepEmpty = GetPrivateProfileIntA("MAIN", "KeepEmptyWeapons", 1, g_iniPath) != 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -548,6 +560,51 @@ static void RestoreSnapshot(uint32_t ped, const Snapshot* s)
     }
 }
 
+static int SnapHas(const Snapshot* s, uint32_t weapon)
+{
+    int i;
+    for (i = 0; i < s->count; i++)
+        if (s->w[i].weapon == weapon) return 1;
+    return 0;
+}
+
+/* The game silently removes a weapon whose total ammo reaches 0. If a weapon
+ * vanished between two alive frames while it was nearly empty, give it back
+ * with 0 ammo so it stays in the inventory. A script strip (every weapon gone
+ * at once) is left alone so missions that take weapons away still work. */
+static void KeepEmptyWeapons(uint32_t ped, const Snapshot* prev, Snapshot* cur, DWORD now)
+{
+    uint32_t a[4];
+    int i;
+
+    if (!prev->valid || prev->count == 0) return;
+    if (cur->count == 0 && prev->count > 1) return; /* full strip by a script */
+
+    for (i = 0; i < prev->count; i++) {
+        uint32_t w = prev->w[i].weapon;
+        if (SnapHas(cur, w)) continue;
+        if (prev->w[i].ammo > KW_EMPTY_LAST_AMMO) continue; /* taken away, not emptied */
+        if (w >= KW_WEAPON_IDS) continue;
+
+        if (now - g_readdTick[w] > KW_EMPTY_WINDOW_MS) g_readdCount[w] = 0;
+        if (g_readdCount[w] >= KW_EMPTY_MAX_READD) continue;
+        g_readdCount[w]++;
+        g_readdTick[w] = now;
+
+        a[0] = ped; a[1] = w; a[2] = 1; a[3] = 0;
+        CallNat(NAT_GIVE_WEAPON_TO_CHAR, a, 4, NULL);
+        a[0] = ped; a[1] = w; a[2] = 0;
+        CallNat(NAT_SET_CHAR_AMMO, a, 3, NULL);
+        if (cur->count < KW_MAX_WEAPONS) {
+            cur->w[cur->count].weapon = w;
+            cur->w[cur->count].ammo = 0;
+            cur->count++;
+        }
+        Logf("empty: weapon %u ran dry (last ammo %u), kept with 0 ammo (try %d)",
+             (unsigned)w, (unsigned)prev->w[i].ammo, g_readdCount[w]);
+    }
+}
+
 static const char* CauseName(int c)
 {
     return c == CAUSE_WASTED ? "WASTED" : (c == CAUSE_BUSTED ? "BUSTED" : "NONE");
@@ -606,9 +663,12 @@ static void OnFrame(void)
                 if (g_snap.valid) Logf("down: cause=%s not kept by config, nothing frozen", CauseName(cause));
                 g_snap.valid = 0;
             }
+            g_prev.valid = 0;
             return;
         }
         TakeSnapshot(ped, &g_snap);
+        if (g_cfgKeepEmpty) KeepEmptyWeapons(ped, &g_prev, &g_snap, now);
+        g_prev = g_snap;
         return;
     }
 
@@ -633,6 +693,7 @@ static void OnFrame(void)
         g_state = ST_ALIVE;
         g_cause = CAUSE_NONE;
         g_snap.valid = 0;
+        g_prev.valid = 0;
     }
 }
 
@@ -731,7 +792,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
         DisableThreadLibraryCalls(hinst);
         SetupPaths(hinst);
         LoadConfig();
-        Logf("KeepWeapons loaded. KeepOnDeath=%d KeepOnArrest=%d", g_cfgKeepOnDeath, g_cfgKeepOnArrest);
+        Logf("KeepWeapons loaded. KeepOnDeath=%d KeepOnArrest=%d KeepEmptyWeapons=%d", g_cfgKeepOnDeath, g_cfgKeepOnArrest, g_cfgKeepEmpty);
         if (TryInit() == 0) {
             th = CreateThread(NULL, 0, PollThread, NULL, 0, NULL);
             if (th) CloseHandle(th);
