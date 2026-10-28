@@ -45,6 +45,7 @@ enum {
     NAT_GIVE_WEAPON_TO_CHAR,
     NAT_SET_CHAR_AMMO,
     NAT_SET_CURRENT_CHAR_WEAPON,
+    NAT_GET_MAX_AMMO,
     NAT_COUNT
 };
 
@@ -67,13 +68,12 @@ static const struct {
     {"GIVE_WEAPON_TO_CHAR",         0x03E90416u},
     {"SET_CHAR_AMMO",               0x437D247Eu},
     {"SET_CURRENT_CHAR_WEAPON",     0x6CF44DD6u},
+    {"GET_MAX_AMMO",                0x7C6968F8u},
 };
 
 /* ------------------------------------------------------------------------- */
 /* Byte patterns (FusionFix, ThirteenAG/GTAIV.EFLC.FusionFix @ cad0970)       */
 /* ------------------------------------------------------------------------- */
-/* Deferred-init sentinel: FusionFix Init() registration in source/dllmain.cpp */
-#define PAT_SENTINEL   "F3 0F 10 44 24 ? F3 0F 59 05 ? ? ? ? EB ? E8"
 /* rage::scrEngine::ms_dwNativeTableSize (source/comvars.ixx) */
 #define PAT_TSIZE_A    "8B 35 ? ? ? ? 85 F6 75 06 33 C0 5E C2 04 00 53 57 8B 7C 24 10"
 #define PAT_TSIZE_B    "8B 3D ? ? ? ? 85 FF 75 04 33 C0 5F C3"
@@ -141,6 +141,7 @@ static int g_cfgKeepOnDeath = 1;
 static int g_cfgKeepOnArrest = 1;
 static int g_cfgKeepEmpty = 1;
 static int g_cfgRestoreOnStrip = 1;
+static int g_cfgGrantLoadout;
 /* Strip restores are rate limited so a mission that insists on an unarmed
  * player is not fought forever. */
 #define KW_STRIP_MAX 2
@@ -155,6 +156,7 @@ static int g_secCount;
 static uintptr_t g_secStart[32];
 static uintptr_t g_secEnd[32];
 static int g_secExec[32];
+static int g_secWrite[32];
 
 static uint8_t* g_pUserPause;
 static uint8_t* g_pScriptPause;
@@ -174,15 +176,11 @@ static DWORD g_downTick;
 static DWORD g_aliveTick;
 static Snapshot g_snap;
 
-/* Keep-empty-weapons state: the previous frame's loadout and, per weapon id,
- * how many times we re-added it after the game dropped it at 0 ammo. */
-#define KW_EMPTY_LAST_AMMO 60   /* weapon must have been nearly empty to count as "ran dry" */
-#define KW_EMPTY_MAX_READD 3    /* stop fighting the game after this many quick re-drops */
-#define KW_EMPTY_WINDOW_MS 5000
-#define KW_WEAPON_IDS 64
+/* GTA IV removes a weapon when its total ammo becomes zero. Keep a two-round
+ * floor while it is owned so the game never reaches that removal path. */
+#define KW_EMPTY_AMMO_FLOOR 2
+#define KW_STRIP_EMPTY_AMMO 60
 static Snapshot g_prev;
-static uint8_t g_readdCount[KW_WEAPON_IDS];
-static DWORD g_readdTick[KW_WEAPON_IDS];
 
 /* ------------------------------------------------------------------------- */
 /* Logging (kernel32/user32 only, no CRT dependency)                          */
@@ -238,6 +236,7 @@ static void LoadConfig(void)
     g_cfgKeepOnArrest = GetPrivateProfileIntA("MAIN", "KeepOnArrest", 1, g_iniPath) != 0;
     g_cfgKeepEmpty = GetPrivateProfileIntA("MAIN", "KeepEmptyWeapons", 1, g_iniPath) != 0;
     g_cfgRestoreOnStrip = GetPrivateProfileIntA("MAIN", "RestoreOnStrip", 1, g_iniPath) != 0;
+    g_cfgGrantLoadout = GetPrivateProfileIntA("MAIN", "GrantRequestedLoadout", 0, g_iniPath) != 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -269,21 +268,25 @@ static int ParseImage(void)
         g_secStart[g_secCount] = s;
         g_secEnd[g_secCount] = s + size;
         g_secExec[g_secCount] = exec;
+        g_secWrite[g_secCount] = (sec->Characteristics & IMAGE_SCN_MEM_WRITE) != 0;
         g_secCount++;
         if (exec && s + size > g_scanEnd) g_scanEnd = s + size;
     }
     return g_scanEnd != 0;
 }
 
-/* A global must live inside the image and outside every executable section. */
+/* A global operand must land in a writable PE section, not merely in the
+ * image-size range. GTA IV CE contains lookalike code for multiple modes and
+ * some decoy operands point into unsectioned gaps between mapped sections. */
 static int IsDataAddr(uintptr_t addr)
 {
     int i;
     if (addr < g_base || addr + 4 > g_imageEnd) return 0;
     for (i = 0; i < g_secCount; i++) {
-        if (g_secExec[i] && addr >= g_secStart[i] && addr < g_secEnd[i]) return 0;
+        if (addr >= g_secStart[i] && addr + 4 <= g_secEnd[i])
+            return g_secWrite[i] && !g_secExec[i];
     }
-    return 1;
+    return 0;
 }
 
 static int ScanPat(const char* text, uintptr_t* out, int max)
@@ -296,35 +299,119 @@ static int ScanPat(const char* text, uintptr_t* out, int max)
     return kw_scan(&p, g_base, g_scanEnd, out, max);
 }
 
-/*
- * Resolves a global whose absolute address is the 32-bit operand at 'off'
- * of the instruction matched by 'pat'. All matches must agree.
- */
-static int ResolveGlobal(const char* name, const char* pat, int off, uintptr_t* outAddr)
-{
-    uintptr_t m[8];
-    int n, k;
-    uint32_t g0;
+/* Complete Edition includes code for more than one game mode, so the
+ * signatures for these two globals can match twice. In this build the native
+ * pointer global is immediately before the matching table-size global. Pair
+ * the operands, then select the pair whose live table actually contains the
+ * natives we need. */
+typedef struct {
+    uintptr_t sizeAddr;
+    uintptr_t tableAddr;
+} NativeGlobals;
 
-    n = ScanPat(pat, m, 8);
-    if (n <= 0) {
-        Logf("pattern %s: NOT FOUND", name);
-        return 0;
-    }
+static NativeGlobals g_nativeCandidates[8];
+static int g_nativeCandidateCount;
+static int g_nativeCandidatesScanned;
+static int g_nativeProbeInitialLogged;
+
+static NativeHandler LookupNative(uint32_t hash);
+
+static int NativeOperandMatches(uintptr_t operandAddr, const char* pattern)
+{
+    uintptr_t matches[8];
+    int n = ScanPat(pattern, matches, 8);
+    int i;
     if (n > 8) n = 8;
-    g0 = kw_read_u32(m[0] + off);
-    for (k = 1; k < n; k++) {
-        if (kw_read_u32(m[k] + off) != g0) {
-            Logf("pattern %s: ambiguous, %d matches disagree", name, n);
-            return 0;
+    for (i = 0; i < n; i++)
+        if ((uintptr_t)kw_read_u32(matches[i] + 2) == operandAddr) return 1;
+    return 0;
+}
+
+static int ResolveNativeGlobals(uintptr_t* sizeAddr, uintptr_t* tableAddr)
+{
+    static const char* sizePatterns[] = { PAT_TSIZE_A, PAT_TSIZE_B };
+    static const char* tablePatterns[] = { PAT_NATIVES_A, PAT_NATIVES_B };
+    int p, i, n, best = -1, bestScore = 0, tied = 0;
+
+    if (!g_nativeCandidatesScanned) {
+        for (p = 0; p < 2; p++) {
+            uintptr_t matches[8];
+            n = ScanPat(sizePatterns[p], matches, 8);
+            if (n > 8) n = 8;
+            for (i = 0; i < n && g_nativeCandidateCount < 8; i++) {
+                uintptr_t s = (uintptr_t)kw_read_u32(matches[i] + 2);
+                uintptr_t t;
+                if (s < 4 || !IsDataAddr(s)) continue;
+                t = s - 4;
+                if (!IsDataAddr(t) || !NativeOperandMatches(t, tablePatterns[p])) continue;
+                {
+                    int j, duplicate = 0;
+                    for (j = 0; j < g_nativeCandidateCount; j++)
+                        if (g_nativeCandidates[j].sizeAddr == s && g_nativeCandidates[j].tableAddr == t) duplicate = 1;
+                    if (!duplicate) {
+                        g_nativeCandidates[g_nativeCandidateCount].sizeAddr = s;
+                        g_nativeCandidates[g_nativeCandidateCount].tableAddr = t;
+                        g_nativeCandidateCount++;
+                    }
+                }
+            }
+        }
+        g_nativeCandidatesScanned = 1;
+    }
+    if (!g_nativeCandidateCount) {
+        Logf("patterns native globals: no matching pointer/size pairs");
+        return -1;
+    }
+
+    for (i = 0; i < g_nativeCandidateCount; i++) {
+        uint32_t size = *(uint32_t*)g_nativeCandidates[i].sizeAddr;
+        uint32_t* table = *(uint32_t**)g_nativeCandidates[i].tableAddr;
+        MEMORY_BASIC_INFORMATION mbi;
+        int score = 0, j;
+        if (!table || !size || size > 0x100000u) {
+            if (!g_nativeProbeInitialLogged)
+                Logf("native global candidate %d: size=0x%08X table=0x%08X not active", i,
+                     (unsigned)size, (unsigned)(uintptr_t)table);
+            continue;
+        }
+        if (!VirtualQuery(table, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+            (uintptr_t)mbi.BaseAddress + mbi.RegionSize < (uintptr_t)table + (uintptr_t)size * 8u) {
+            if (!g_nativeProbeInitialLogged)
+                Logf("native global candidate %d: table memory range is unreadable", i);
+            continue;
+        }
+        g_pNativeTableSize = (uint32_t*)g_nativeCandidates[i].sizeAddr;
+        g_ppNativeTable = (uint32_t**)g_nativeCandidates[i].tableAddr;
+        for (j = 0; j < NAT_COUNT; j++)
+            if (LookupNative(g_natDefs[j].hash)) score++;
+        if (score == NAT_COUNT || !g_nativeProbeInitialLogged)
+            Logf("native global candidate %d: size=%u table=0x%08X resolved=%d/%d", i,
+                 (unsigned)size, (unsigned)(uintptr_t)table, score, NAT_COUNT);
+        if (score == NAT_COUNT && bestScore < NAT_COUNT) {
+            best = i;
+            bestScore = score;
+            tied = 0;
+        } else if (score == NAT_COUNT && bestScore == NAT_COUNT) {
+            uint32_t* bestTable = *(uint32_t**)g_nativeCandidates[best].tableAddr;
+            uint32_t bestSize = *(uint32_t*)g_nativeCandidates[best].sizeAddr;
+            if (bestTable != table || bestSize != size) tied = 1;
         }
     }
-    Logf("pattern %s: %d match(es), first at 0x%08X, global=0x%08X", name, n, (unsigned)m[0], (unsigned)g0);
-    if (!IsDataAddr((uintptr_t)g0)) {
-        Logf("pattern %s: global 0x%08X is not a data address, rejected", name, (unsigned)g0);
-        return 0;
+    g_nativeProbeInitialLogged = 1;
+    if (best < 0) {
+        g_pNativeTableSize = NULL;
+        g_ppNativeTable = NULL;
+        return 0; /* wait for game native registration */
     }
-    *outAddr = (uintptr_t)g0;
+    if (tied) {
+        Logf("native globals: multiple different live tables resolve the same hashes");
+        g_pNativeTableSize = NULL;
+        g_ppNativeTable = NULL;
+        return -1;
+    }
+    *sizeAddr = g_nativeCandidates[best].sizeAddr;
+    *tableAddr = g_nativeCandidates[best].tableAddr;
     return 1;
 }
 
@@ -568,48 +655,67 @@ static void RestoreSnapshot(uint32_t ped, const Snapshot* s)
     }
 }
 
-static int SnapHas(const Snapshot* s, uint32_t weapon)
+/* Optional one-shot loadout requested by the user. Weapon type ids are the
+ * GTA IV eWeapon values: pistol=7, pump shotgun=10, Micro-Uzi=12. */
+static void GrantRequestedLoadout(uint32_t ped)
 {
-    int i;
-    for (i = 0; i < s->count; i++)
-        if (s->w[i].weapon == weapon) return 1;
-    return 0;
+    static const uint32_t weapons[] = { 7u, 12u, 10u };
+    uint32_t i, granted = 0;
+    uint32_t a[4], maxAmmo, ok;
+
+    for (i = 0; i < sizeof(weapons) / sizeof(weapons[0]); i++) {
+        maxAmmo = 0;
+        a[0] = ped;
+        a[1] = weapons[i];
+        a[2] = (uint32_t)(uintptr_t)&maxAmmo;
+        ok = 0;
+        if (!CallNat(NAT_GET_MAX_AMMO, a, 3, &ok) || !(ok & 0xFF) || maxAmmo == 0) {
+            Logf("loadout: GET_MAX_AMMO failed for weapon %u", (unsigned)weapons[i]);
+            continue;
+        }
+        a[0] = ped;
+        a[1] = weapons[i];
+        a[2] = maxAmmo;
+        a[3] = 1;
+        CallNat(NAT_GIVE_WEAPON_TO_CHAR, a, 4, NULL);
+        a[0] = ped;
+        a[1] = weapons[i];
+        a[2] = maxAmmo;
+        CallNat(NAT_SET_CHAR_AMMO, a, 3, NULL);
+        granted++;
+        Logf("loadout: granted weapon %u with full ammo %u", (unsigned)weapons[i], (unsigned)maxAmmo);
+    }
+
+    a[0] = ped;
+    a[1] = 7u;
+    a[2] = 1;
+    CallNat(NAT_SET_CURRENT_CHAR_WEAPON, a, 3, NULL);
+    Logf("loadout: one-shot grant complete (%u/3 weapons)", (unsigned)granted);
+    g_cfgGrantLoadout = 0;
+    WritePrivateProfileStringA("MAIN", "GrantRequestedLoadout", "0", g_iniPath);
 }
 
-/* The game silently removes a weapon whose total ammo reaches 0. If a weapon
- * vanished between two alive frames while it was nearly empty, give it back
- * with 0 ammo so it stays in the inventory. A script strip (every weapon gone
- * at once) is left alone so missions that take weapons away still work. */
-static void KeepEmptyWeapons(uint32_t ped, const Snapshot* prev, Snapshot* cur, DWORD now)
+/* Do not set ammo to zero: GTA IV removes the weapon at zero. Before the game
+ * processes the next frame, replenish only the final rounds when total ammo
+ * is low. This preserves the weapon and its normal reload/empty behavior. */
+static void KeepEmptyWeapons(uint32_t ped, Snapshot* cur)
 {
-    uint32_t a[4];
     int i;
+    uint32_t a[3];
 
-    if (!prev->valid || prev->count == 0) return;
-    if (cur->count == 0 && prev->count > 1) return; /* full strip by a script */
+    for (i = 0; i < cur->count; i++) {
+        uint32_t w = cur->w[i].weapon;
+        uint32_t ammo = cur->w[i].ammo;
+        /* Replenish only on the transition to the last remaining round. The
+         * floor itself must not be rewritten every frame. */
+        if (ammo != 1) continue;
 
-    for (i = 0; i < prev->count; i++) {
-        uint32_t w = prev->w[i].weapon;
-        if (SnapHas(cur, w)) continue;
-        if (prev->w[i].ammo > KW_EMPTY_LAST_AMMO) continue; /* taken away, not emptied */
-        if (w >= KW_WEAPON_IDS) continue;
-
-        if (now - g_readdTick[w] > KW_EMPTY_WINDOW_MS) g_readdCount[w] = 0;
-        if (g_readdCount[w] >= KW_EMPTY_MAX_READD) continue;
-        g_readdCount[w]++;
-        g_readdTick[w] = now;
-
-        a[0] = ped; a[1] = w; a[2] = 1; a[3] = 0;
-        CallNat(NAT_GIVE_WEAPON_TO_CHAR, a, 4, NULL);
-        a[0] = ped; a[1] = w; a[2] = 0;
+        a[0] = ped;
+        a[1] = w;
+        a[2] = KW_EMPTY_AMMO_FLOOR;
         CallNat(NAT_SET_CHAR_AMMO, a, 3, NULL);
-        if (cur->count < KW_MAX_WEAPONS) {
-            cur->w[cur->count].weapon = w;
-            cur->w[cur->count].ammo = 0;
-            cur->count++;
-        }
-        Logf("empty: weapon %u ran dry (last ammo %u), kept with 0 ammo (try %d)",
-             (unsigned)w, (unsigned)prev->w[i].ammo, g_readdCount[w]);
+        cur->w[i].ammo = KW_EMPTY_AMMO_FLOOR;
+        Logf("empty: weapon %u reached %u total ammo; kept above zero", (unsigned)w, (unsigned)ammo);
     }
 }
 
@@ -674,13 +780,14 @@ static void OnFrame(void)
             g_prev.valid = 0;
             return;
         }
+        if (g_cfgGrantLoadout) GrantRequestedLoadout(ped);
         TakeSnapshot(ped, &g_snap);
         /* Every weapon gone at once while alive: mission death/fail cleanup
          * (which can run before the game flags the player as dead), a mission
          * retry, or a script strip. Freeze the last good loadout and restore
          * it through the same settle/fade-in path as a death. */
         if (g_cfgRestoreOnStrip && g_prev.valid && g_snap.count == 0 &&
-            (g_prev.count > 1 || (g_prev.count == 1 && g_prev.w[0].ammo > KW_EMPTY_LAST_AMMO))) {
+            (g_prev.count > 1 || (g_prev.count == 1 && g_prev.w[0].ammo > KW_STRIP_EMPTY_AMMO))) {
             if (now - g_stripTick > KW_STRIP_WINDOW_MS) g_stripCount = 0;
             if (g_stripCount < KW_STRIP_MAX) {
                 g_stripCount++;
@@ -697,7 +804,7 @@ static void OnFrame(void)
             }
             Logf("strip: limit reached, leaving the player unarmed");
         }
-        if (g_cfgKeepEmpty) KeepEmptyWeapons(ped, &g_prev, &g_snap, now);
+        if (g_cfgKeepEmpty) KeepEmptyWeapons(ped, &g_snap);
         g_prev = g_snap;
         return;
     }
@@ -730,7 +837,8 @@ static void OnFrame(void)
 /* Installed over the CGameProcess call in the main loop. */
 static void __cdecl HookGameProcess(void)
 {
-    if (g_enabled && g_pUserPause && g_pScriptPause && !*g_pUserPause && !*g_pScriptPause)
+    if (g_enabled && (!g_pUserPause || !*g_pUserPause) &&
+        (!g_pScriptPause || !*g_pScriptPause))
         OnFrame();
     g_origGameProcess();
 }
@@ -751,25 +859,25 @@ static int TryInit(void)
     uintptr_t m[4];
     uintptr_t tsizeGlobal = 0, nativesGlobal = 0, userP = 0, scriptP = 0;
     uintptr_t site = 0, orig = 0;
-    int n;
+    int n, nativeGlobals;
 
     if (g_initDone) return g_enabled ? 1 : -1;
     if (!ParseImage()) return Fail("PE header parse failed (not a 32-bit image?)");
 
-    n = ScanPat(PAT_SENTINEL, m, 1);
-    if (n <= 0) return 0; /* the game code is not ready yet, the poll thread will retry */
-    Logf("init: sentinel found (%d match), image base=0x%08X scan_end=0x%08X", n, (unsigned)g_base, (unsigned)g_scanEnd);
+    Logf("init: image base=0x%08X scan_end=0x%08X", (unsigned)g_base, (unsigned)g_scanEnd);
 
-    if (!ResolveGlobal("ms_dwNativeTableSize(A)", PAT_TSIZE_A, 2, &tsizeGlobal) &&
-        !ResolveGlobal("ms_dwNativeTableSize(B)", PAT_TSIZE_B, 2, &tsizeGlobal))
-        return Fail("ms_dwNativeTableSize not resolved");
-
-    if (!ResolveGlobal("ms_pNatives(A)", PAT_NATIVES_A, 2, &nativesGlobal) &&
-        !ResolveGlobal("ms_pNatives(B)", PAT_NATIVES_B, 2, &nativesGlobal))
-        return Fail("ms_pNatives not resolved");
+    nativeGlobals = ResolveNativeGlobals(&tsizeGlobal, &nativesGlobal);
+    if (nativeGlobals < 0) return Fail("native globals resolve ambiguously");
+    if (nativeGlobals == 0) {
+        if (!g_natsWaitLogged) {
+            Logf("native globals: no populated native table yet, retrying");
+            g_natsWaitLogged = 1;
+        }
+        return 0;
+    }
 
     if (!ResolvePause(&userP, &scriptP))
-        return Fail("CTimer pause flags not resolved");
+        Logf("pattern ms_bPause: unavailable; continuing without pause flag checks");
 
     n = ScanPat(PAT_GAMEPROCESS, m, 4);
     if (n != 1) {
@@ -804,13 +912,21 @@ static int TryInit(void)
 
 static DWORD WINAPI PollThread(LPVOID unused)
 {
-    int i;
+    DWORD elapsed = 0;
     (void)unused;
-    for (i = 0; i < 3000; i++) { /* up to 300 s */
-        Sleep(100);
-        if (TryInit() != 0) return 0;
+    Sleep(100);
+    while (elapsed < 300000u) {
+        int result = TryInit();
+        if (result > 0) return 0;
+        if (result < 0) {
+            Logf("init: required game pattern check failed; plugin inactive");
+            return 0;
+        }
+        Sleep(1000);
+        elapsed += 1000;
     }
-    Logf("init: sentinel not found after 300 s, plugin inactive");
+    Fail("native table remained unavailable after 300 s");
+    Logf("init: required game pattern check failed; plugin inactive");
     return 0;
 }
 
@@ -822,12 +938,11 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
         DisableThreadLibraryCalls(hinst);
         SetupPaths(hinst);
         LoadConfig();
-        Logf("KeepWeapons loaded. KeepOnDeath=%d KeepOnArrest=%d KeepEmptyWeapons=%d RestoreOnStrip=%d", g_cfgKeepOnDeath, g_cfgKeepOnArrest, g_cfgKeepEmpty, g_cfgRestoreOnStrip);
-        if (TryInit() == 0) {
-            th = CreateThread(NULL, 0, PollThread, NULL, 0, NULL);
-            if (th) CloseHandle(th);
-            else Logf("init: CreateThread failed, plugin inactive");
-        }
+        Logf("KeepWeapons loaded. KeepOnDeath=%d KeepOnArrest=%d KeepEmptyWeapons=%d RestoreOnStrip=%d GrantRequestedLoadout=%d", g_cfgKeepOnDeath, g_cfgKeepOnArrest, g_cfgKeepEmpty, g_cfgRestoreOnStrip, g_cfgGrantLoadout);
+        /* Defer scanning and patching until after DllMain releases the loader lock. */
+        th = CreateThread(NULL, 0, PollThread, NULL, 0, NULL);
+        if (th) CloseHandle(th);
+        else Logf("init: CreateThread failed, plugin inactive");
     }
     return TRUE;
 }
