@@ -76,6 +76,56 @@ Estos valores priorizan el máximo visual; distancia y densidad al tope pueden r
 ### Ventana de Rockstar en Omarchy
 En `~/.config/hypr/hyprland.lua`, las ventanas auxiliares de Steam/Rockstar se envían al workspace especial oculto y sin foco; la ventana titulada `GTAIV` se asigna al workspace 5 para que el juego siga visible. La configuración se recargó y `hyprctl configerrors` no reportó errores.
 
+## Configuración aplicada en el PC con Windows
+
+Fecha: 2026-10-28. Windows 11, RTX 5050 Laptop, monitor 1920×1080 a 180 Hz. Instalación de Steam: `C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV\`, versión **1.2.0.59** (Complete Edition). No se hizo downgrade: todo lo instalado funciona en 1.2.0.59. Aún no se ha probado en una partida.
+
+### Mods instalados
+
+| Mod | Versión | Fuente | Ubicación | Qué hace |
+|---|---|---|---|---|
+| [FusionFix](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix) | 5.1.2 | GitHub | raíz (`dinput8.dll`, `d3d9.dll`, `vulkan.dll`), `plugins/`, `update/` | Correcciones, gráficos modernos y cargador de ASI |
+| KeepWeapons (este repo) | `main` | compilado con `build.ps1 -Test` | `plugins/` | Conserva armas y munición al morir o ser arrestado |
+| [Various Fixes](https://github.com/valentyn-l/GTAIV.EFLC.Various.Fixes) | verified_2.4 | GitHub (variante Fusion Overloader) | `update/Various Fixes/` y archivos del mapa en `update/` | Miles de correcciones de modelos, texturas y mapa |
+| [VolumetricLights](https://github.com/RecklessGlue540/VolumetricLights) | 2.00 | GitHub | `plugins/`, `update/1. VolumetricLights/`, `update/pc/data/maps/props/roadside/` | Haces de luz en farolas con lluvia, niebla y tormenta |
+| [Xbox Rain Droplets](https://github.com/ThirteenAG/XboxRainDroplets) | gtaiv | GitHub | `plugins/` | Gotas de lluvia en pantalla, como en consola |
+| [ScriptHookDotNet](https://github.com/Tomasak/gta4_scripthookdotnet) (build para CE) | 1.7.1.8 | GitHub | raíz (`ScriptHookDotNet.asi`, `ScriptHook.dll`, `aCompleteEditionHook.asi`) | Carga scripts .NET en 1.2.0.59 |
+| [WeapFuncsIV](https://github.com/LotsofEds/WeapFuncsIV) | 1.21 | GitHub | `scripts/`, `update/CoverAnims/` | Disparo a ciegas más fluido, ráfaga automática, recortada con segundo cartucho inmediato, cadencia de NPC |
+| [Liberty Loadout](https://www.nexusmods.com/gta4/mods/1226) | 0.19.1 | Nexus | `plugins/` | Rueda de armas y radios estilo GTA V, hitmarkers, linterna |
+| [Liberty Shoulder](https://www.nexusmods.com/gta4/mods/1229) | 0.3.0 | Nexus | `plugins/` | Cambio de hombro al apuntar |
+
+Además se instaló el runtime **DirectX 9.0c (junio 2010)** desde el instalador de Steam firmado por Microsoft (`Steamworks Shared\_CommonRedist\DirectX\Jun2010\DXSETUP.exe`), porque ScriptHookDotNet necesita `d3dx9_43.dll`.
+
+### Seguridad
+- Todo salió de GitHub oficial o de Nexus; nada de sitios espejo.
+- Zig 0.13.0 y Liberty Loadout se verificaron por SHA-256 (Liberty Loadout: `DFA440D9…0573FA`, igual al publicado por el autor).
+- Windows Defender analizó los archivos de Nexus sin encontrar amenazas.
+- Se revisó el código fuente de WeapFuncsIV: no usa red, procesos ni registro; solo lee `scripts/WeapFuncs.ini`.
+
+### Descartados
+- **LibertyTweaks, RevampedCombat, Project Thunder**: dependen de IV-SDK .NET, que solo funciona en 1.0.7.0/1.0.8.0. Usarlos obliga a hacer downgrade, lo que rompe FusionFix en CE, TLAD/TBoGT y este plugin.
+- **CenteredVehicleCam**: ya está integrado en FusionFix.
+
+### Controles nuevos
+- **Tab** (mantener) / D-pad derecha: rueda de armas a pie, rueda de radios en vehículo (Liberty Loadout).
+- **L**: linterna; mantener para cambiar el brillo (Liberty Loadout).
+- **B** / LB: cambiar de hombro al apuntar (Liberty Shoulder).
+
+### Ajustes cambiados
+- `commandline.txt`: `-fullscreen -width 1920 -height 1080 -refreshrate 180 -texturequality 2 -renderquality 4 -shadowquality 4 -shadowdensity 16 -viewdistance 99 -detailquality 99 -vehicledensity 70 -norestrictions -nomemrestrict`. La densidad de tráfico es 70 y no 100 porque es lo que más carga la CPU y apenas se nota.
+- `plugins/GTAIV.EFLC.FusionFix.ini`: `HighResolutionShadows = 1`, `ForceShadowFilter = 2`, `ReflectionMSAAQuality = 8`, `SunShaftsDensity = 1.0`, `AimingZoomFix = 2` (zoom estilo Xbox en los tres juegos), `EpisodicWeapons = 1`.
+- `plugins/LibertyLoadout.ini`: `Theme GTAV`, `HitSound TRUE`.
+- `scripts/WeapFuncs.ini`: `ReloadInVehicles = false` y `MP5ReloadCrouchFix = false`, porque requieren mods que no están instalados (Real Reload, animaciones de B-Dawg).
+- Windows (Configuración > Pantalla > Gráficos): `GTAIV.exe` fijado en **alto rendimiento** para que use la RTX y no la Intel integrada (`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`).
+
+### Pendiente
+- Activar **Raw Input** en el menú de FusionFix dentro del juego (lo recomienda Liberty Loadout para apuntar con ratón).
+
+### Si algo falla
+- Cada plugin escribe su `.log` en `plugins/`; ScriptHookDotNet escribe `ScriptHookDotNet.log` en la raíz.
+- Si el juego crashea al iniciar, el sospechoso más probable es ScriptHookDotNet: quita `ScriptHookDotNet.asi` y `aCompleteEditionHook.asi` de la raíz para probar sin él (WeapFuncsIV dejará de cargar).
+- Cualquier `.asi` de `plugins/` se puede desactivar renombrándolo (por ejemplo a `.asi.off`).
+
 ## Credits
 - The game patterns, native-table lookup and call-context layout are based on [ThirteenAG/GTAIV.EFLC.FusionFix](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix) (commit `cad0970e`): `source/dllmain.cpp`, `source/comvars.ixx` and `source/natives.ixx`.
 - The native hashes were cross-checked against [Zolika1351/iv-sdk](https://github.com/Zolika1351/iv-sdk).
