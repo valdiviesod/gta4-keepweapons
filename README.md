@@ -122,6 +122,7 @@ Además se instaló el runtime **DirectX 9.0c (junio 2010)** desde el instalador
 - Activar **Raw Input** en el menú de FusionFix dentro del juego (lo recomienda Liberty Loadout para apuntar con ratón).
 
 ### Si algo falla
+- **"Grand Theft Auto IV exited unexpectedly" al iniciar, de forma aleatoria:** es un bug conocido del Rockstar Games Launcher ([FusionFix #355](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix/issues/355), abierto desde 2023, también pasa sin mods). Windows lo registra como `BEX` / módulo `unknown`. Pulsa **RETRY** en esa ventana y el juego carga. Se confirmó el 2026-10-28: la misma configuración arrancó y falló en lanzamientos seguidos, sin cambios en los archivos.
 - Cada plugin escribe su `.log` en `plugins/`; ScriptHookDotNet escribe `ScriptHookDotNet.log` en la raíz.
 - Si el juego crashea al iniciar, el sospechoso más probable es ScriptHookDotNet: quita `ScriptHookDotNet.asi` y `aCompleteEditionHook.asi` de la raíz para probar sin él (WeapFuncsIV dejará de cargar).
 - Cualquier `.asi` de `plugins/` se puede desactivar renombrándolo (por ejemplo a `.asi.off`).
