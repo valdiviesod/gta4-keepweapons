@@ -22,6 +22,7 @@ KeepOnArrest=1  ; restore weapons after Busted
 KeepEmptyWeapons=1  ; prevent a weapon being discarded at zero by replenishing the final round
 RestoreOnStrip=1    ; restore the loadout if every weapon is removed at once (mission death/retry)
 GrantRequestedLoadout=0 ; one-shot: grant Pistol, Micro-Uzi and Pump Shotgun at max ammo
+FreeAim=1           ; disable the aim snap (lock-on) to peds so the reticle goes where you point
 ```
 
 ## How it works
@@ -30,6 +31,7 @@ GrantRequestedLoadout=0 ; one-shot: grant Pistol, Micro-Uzi and Pump Shotgun at 
 - While the player is alive, it records a snapshot of weapon slots 1–11 (weapon ID and ammo) and the current weapon.
 - When the player dies or is arrested, that snapshot is kept. After the player respawns and the screen fades in, plus about 1.5 s, the plugin restores the weapons: `REMOVE_ALL_CHAR_WEAPONS`, then `GIVE_WEAPON_TO_CHAR` and `SET_CHAR_AMMO` for each weapon, then `SET_CURRENT_CHAR_WEAPON`. Removing everything first prevents duplicated ammo.
 - **Keep weapons when nearly empty:** GTA IV removes a weapon when its total ammo reaches 0; setting ammo to 0 does not preserve it. With `KeepEmptyWeapons=1`, the plugin raises a weapon's total ammo to 2 when it reaches 1, before the game's next frame can remove it. This keeps the weapon in the inventory and avoids the discard animation. It leaves other ammo counts alone. Since the game cannot represent an owned weapon at exactly zero ammo, the last round is effectively replenished; disable this option for standard ammo depletion.
+- **Free aim (v0.4.0):** with `FreeAim=1` the plugin calls `DISABLE_PLAYER_LOCKON(player, TRUE)` every frame while the player is alive, so aiming never snaps onto peds. It is reapplied each frame because mission scripts can turn lock-on back on. Set `FreeAim=0` for the vanilla lock-on.
 - **Requested starting loadout:** setting `GrantRequestedLoadout=1` gives weapon IDs for the Pistol, Micro-Uzi and Pump Shotgun their game-reported maximum ammo the first time the player is alive. The option resets itself to 0 after that one grant. The change remains in the current session; use an in-game save to keep it in the save file.
 - **Mission death and retry (v0.3.0):** sometimes a mission removes all your weapons when it fails, even before the game marks you as dead. If every weapon disappears at once while you are alive, the plugin keeps your last full loadout, with its ammo, and gives it back once the screen fades in. It does this at most 2 times per minute, so missions that need you unarmed still work.
 - **Fail-safe:** required game patterns must resolve (the `CGameProcess` call site must be unique) before any code is patched, and every native must resolve before gameplay logic runs. Pause-flag patterns are optional because some Complete Edition builds use different instructions. If a required pattern fails, the plugin patches nothing and stays inert.

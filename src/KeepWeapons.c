@@ -46,6 +46,7 @@ enum {
     NAT_SET_CHAR_AMMO,
     NAT_SET_CURRENT_CHAR_WEAPON,
     NAT_GET_MAX_AMMO,
+    NAT_DISABLE_PLAYER_LOCKON,
     NAT_COUNT
 };
 
@@ -69,6 +70,7 @@ static const struct {
     {"SET_CHAR_AMMO",               0x437D247Eu},
     {"SET_CURRENT_CHAR_WEAPON",     0x6CF44DD6u},
     {"GET_MAX_AMMO",                0x7C6968F8u},
+    {"DISABLE_PLAYER_LOCKON",       0x711214F3u},
 };
 
 /* ------------------------------------------------------------------------- */
@@ -142,6 +144,8 @@ static int g_cfgKeepOnArrest = 1;
 static int g_cfgKeepEmpty = 1;
 static int g_cfgRestoreOnStrip = 1;
 static int g_cfgGrantLoadout;
+static int g_cfgFreeAim = 1;
+static int g_freeAimLogged;
 /* Strip restores are rate limited so a mission that insists on an unarmed
  * player is not fought forever. */
 #define KW_STRIP_MAX 2
@@ -237,6 +241,7 @@ static void LoadConfig(void)
     g_cfgKeepEmpty = GetPrivateProfileIntA("MAIN", "KeepEmptyWeapons", 1, g_iniPath) != 0;
     g_cfgRestoreOnStrip = GetPrivateProfileIntA("MAIN", "RestoreOnStrip", 1, g_iniPath) != 0;
     g_cfgGrantLoadout = GetPrivateProfileIntA("MAIN", "GrantRequestedLoadout", 0, g_iniPath) != 0;
+    g_cfgFreeAim = GetPrivateProfileIntA("MAIN", "FreeAim", 1, g_iniPath) != 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -781,6 +786,18 @@ static void OnFrame(void)
             return;
         }
         if (g_cfgGrantLoadout) GrantRequestedLoadout(ped);
+        /* Free aim: turn off the aim snap to peds. Reapplied every frame because
+         * mission scripts can switch lock-on back on. */
+        if (g_cfgFreeAim) {
+            uint32_t la[2];
+            la[0] = player;
+            la[1] = 1;
+            CallNat(NAT_DISABLE_PLAYER_LOCKON, la, 2, NULL);
+            if (!g_freeAimLogged) {
+                Logf("freeaim: lock-on disabled for player %u", (unsigned)player);
+                g_freeAimLogged = 1;
+            }
+        }
         TakeSnapshot(ped, &g_snap);
         /* Every weapon gone at once while alive: mission death/fail cleanup
          * (which can run before the game flags the player as dead), a mission
@@ -938,7 +955,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
         DisableThreadLibraryCalls(hinst);
         SetupPaths(hinst);
         LoadConfig();
-        Logf("KeepWeapons loaded. KeepOnDeath=%d KeepOnArrest=%d KeepEmptyWeapons=%d RestoreOnStrip=%d GrantRequestedLoadout=%d", g_cfgKeepOnDeath, g_cfgKeepOnArrest, g_cfgKeepEmpty, g_cfgRestoreOnStrip, g_cfgGrantLoadout);
+        Logf("KeepWeapons loaded. KeepOnDeath=%d KeepOnArrest=%d KeepEmptyWeapons=%d RestoreOnStrip=%d GrantRequestedLoadout=%d FreeAim=%d", g_cfgKeepOnDeath, g_cfgKeepOnArrest, g_cfgKeepEmpty, g_cfgRestoreOnStrip, g_cfgGrantLoadout, g_cfgFreeAim);
         /* Defer scanning and patching until after DllMain releases the loader lock. */
         th = CreateThread(NULL, 0, PollThread, NULL, 0, NULL);
         if (th) CloseHandle(th);
