@@ -78,7 +78,7 @@ En `~/.config/hypr/hyprland.lua`, las ventanas auxiliares de Steam/Rockstar se e
 
 ## Configuración aplicada en el PC con Windows
 
-Fecha: 2026-10-28. Windows 11, RTX 5050 Laptop, monitor 1920×1080 a 180 Hz. Instalación de Steam: `C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV\`, versión **1.2.0.59** (Complete Edition). No se hizo downgrade: todo lo instalado funciona en 1.2.0.59. Aún no se ha probado en una partida.
+Fecha: 2026-10-28. Windows 11, RTX 5050 Laptop, monitor 1920×1080 a 180 Hz. Instalación de Steam: `C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV\`, versión **1.2.0.59** (Complete Edition). No se hizo downgrade: todo lo instalado funciona en 1.2.0.59. Validación: con todos los mods, el juego arranca y sigue en ejecución pasados 90 s; KeepWeapons resolvió todos sus natives y ScriptHookDotNet inició `WeapFuncs.net.Main`. No se ha probado una partida completa.
 
 ### Mods instalados
 
@@ -113,7 +113,7 @@ Además se instaló el runtime **DirectX 9.0c (junio 2010)** desde el instalador
 
 ### Ajustes cambiados
 - `commandline.txt`: `-fullscreen -width 1920 -height 1080 -refreshrate 180 -texturequality 2 -renderquality 4 -shadowquality 4 -shadowdensity 16 -viewdistance 99 -detailquality 99 -vehicledensity 70 -norestrictions -nomemrestrict`. La densidad de tráfico es 70 y no 100 porque es lo que más carga la CPU y apenas se nota.
-- `plugins/GTAIV.EFLC.FusionFix.ini`: `HighResolutionShadows = 1`, `ForceShadowFilter = 2`, `ReflectionMSAAQuality = 8`, `SunShaftsDensity = 1.0`, `AimingZoomFix = 2` (zoom estilo Xbox en los tres juegos), `EpisodicWeapons = 1`.
+- `plugins/GTAIV.EFLC.FusionFix.ini`: `HighResolutionShadows = 1`, `ForceShadowFilter = 2`, `ReflectionMSAAQuality = 8`, `SunShaftsDensity = 1.0`, `AimingZoomFix = 2` (zoom estilo Xbox en los tres juegos). `EpisodicWeapons` se deja en `0`: con `1` FusionFix crashea al iniciar (access violation en `GTAIV.EFLC.FusionFix.asi`, offset `0x7775b`) porque IV no tiene los archivos de las armas episódicas. Se confirmó por bisección el 2026-10-28.
 - `plugins/LibertyLoadout.ini`: `Theme GTAV`, `HitSound TRUE`.
 - `scripts/WeapFuncs.ini`: `ReloadInVehicles = false` y `MP5ReloadCrouchFix = false`, porque requieren mods que no están instalados (Real Reload, animaciones de B-Dawg).
 - Windows (Configuración > Pantalla > Gráficos): `GTAIV.exe` fijado en **alto rendimiento** para que use la RTX y no la Intel integrada (`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`).
