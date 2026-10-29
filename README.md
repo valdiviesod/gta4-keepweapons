@@ -2,7 +2,7 @@
 
 An ASI plugin for **GTA IV: The Complete Edition (1.2.0.59)** that keeps your weapons and ammo when you are **Wasted**, and optionally when you are **Busted**. It works in IV, TLAD and TBoGT.
 
-**Target:** GTA IV Complete Edition 1.2.0.59 with FusionFix under Proton (Linux). The current build compiles and has been launched in-game on the setup documented below.
+**Target:** GTA IV Complete Edition 1.2.0.59 with FusionFix, on Windows or under Proton (Linux). It builds on both platforms.
 
 ## Requirements
 - GTA IV Complete Edition **1.2.0.59** (Steam)
@@ -47,6 +47,12 @@ The plugin writes `KeepWeapons.log` next to the `.asi`:
 ./build.sh --fetch-zig --test
 ```
 This downloads Zig 0.13.0 (sha256-verified) into `./tools`. It cross-compiles a 32-bit Windows DLL (`x86-windows-gnu`) and runs the pattern scanner's unit tests.
+
+## Build (Windows, no admin)
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -FetchZig -Test -Install "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV"
+```
+This downloads Zig 0.13.0 for Windows (sha256-verified), runs the unit tests, builds `KeepWeapons.asi` and, with `-Install`, copies it (and the `.ini` if one is not already there) into `GTAIV\plugins`. Omit `-Install` to only build.
 
 ## Known limitations
 - It only keeps weapons and ammo, not armour.

@@ -3,3 +3,5 @@ downloads/
 *.asi
 *.log
 tests/test_patscan
+tests/test_patscan.exe
+tests/test_patscan.pdb
